@@ -3,6 +3,7 @@ package web
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 	"github.com/unidb/unidb-go/security"
 	"github.com/unidb/unidb-go/federation"
 	"github.com/unidb/unidb-go/cache"
+	"github.com/unidb/unidb-go/router"
 )
 
 var queryCache = cache.NewEngine()
@@ -37,6 +39,23 @@ type PipelineMetrics struct {
 
 type queryRequest struct {
 	Query string `json:"query"`
+}
+
+// AI Router demo types
+type aiRouterDemoRequest struct {
+	Queries []string `json:"queries"`
+}
+
+type aiRouterPrediction struct {
+	Query      string  `json:"query"`
+	Database   string  `json:"database"`
+	Dialect    string  `json:"dialect"`
+	Confidence float64 `json:"confidence"`
+}
+
+type aiRouterDemoResponse struct {
+	Predictions []aiRouterPrediction `json:"predictions"`
+	TrainedOn   int                  `json:"trained_on"`
 }
 
 func handleQuery(w http.ResponseWriter, r *http.Request) {
@@ -146,6 +165,52 @@ func handleStats(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(stats)
 }
 
+func handleAIRouterDemo(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req aiRouterDemoRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		return
+	}
+
+	// Create a fresh model with seed data (no file dependency for demo)
+	model := router.NewRoutingModel()
+	seedData := []router.TrainingRecord{
+		{Query: "SELECT * FROM users LIMIT 10", Database: "postgres", Dialect: "PostgreSQL"},
+		{Query: "SELECT * FROM users WHERE ROWNUM <= 10", Database: "oracle", Dialect: "OracleSQL"},
+		{Query: "SELECT * FROM users ORDER BY id DESC LIMIT 5", Database: "mysql", Dialect: "MySQL"},
+		{Query: "SELECT JSON_EXTRACT(data, '$.name') FROM configs", Database: "mysql", Dialect: "MySQL"},
+		{Query: "SELECT data->>'name' FROM configs", Database: "postgres", Dialect: "PostgreSQL"},
+		{Query: `{ "find": "users", "filter": { "age": { "$gt": 25 } } }`, Database: "mongodb", Dialect: "MQL"},
+	}
+	model.Train(seedData)
+
+	resp := aiRouterDemoResponse{
+		TrainedOn: len(seedData),
+	}
+
+	for _, q := range req.Queries {
+		prediction := model.Predict(q)
+		
+		// Normalize log-probability to a 0-1 confidence scale
+		normalizedConf := 1.0 / (1.0 + math.Exp(-prediction.Confidence - 5.0))
+
+		resp.Predictions = append(resp.Predictions, aiRouterPrediction{
+			Query:      q,
+			Database:   prediction.TargetDatabase,
+			Dialect:    prediction.TargetDialect,
+			Confidence: normalizedConf,
+		})
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
+}
+
 // StartServer starts the web server on the given port
 func StartServer(port int) error {
 	fs := http.FileServer(http.Dir("./web/static"))
@@ -153,6 +218,7 @@ func StartServer(port int) error {
 	http.HandleFunc("/api/query", handleQuery)
 	http.HandleFunc("/api/stats", handleStats)
 	http.HandleFunc("/api/schema", handleSchema)
+	http.HandleFunc("/api/demo/ai-router", handleAIRouterDemo)
 
 	fmt.Printf("Web Dashboard running at http://localhost:%d\n", port)
 	return http.ListenAndServe(fmt.Sprintf(":%d", port), nil)
@@ -176,4 +242,5 @@ func handleSchema(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(schema)
 }
+
 

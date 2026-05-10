@@ -39,6 +39,10 @@
                     <span class="icon">⚙️</span>
                     <span>Performance</span>
                 </a>
+                <a class="nav-item" data-view="demo">
+                    <span class="icon">🎯</span>
+                    <span>Demo</span>
+                </a>
             </nav>
 
             <div style="margin-top: auto; padding: 1rem;">
@@ -236,6 +240,325 @@ WHERE u.id > 0</textarea>
                         <div class="metric"><label>Exec:</label> <span id="pm-exec">0ms</span></div>
                     </div>
                 </section>
+            </div>
+
+            <!-- VIEW: DEMO -->
+            <div id="view-demo" class="view hidden">
+                <header class="demo-header">
+                    <div class="demo-title-row">
+                        <div>
+                            <h2 style="font-size: 2.2rem; margin-bottom: 0.5rem;">🎯 UniDB-Go vs Standard Go</h2>
+                            <p style="color: var(--text-muted); font-size: 1.05rem;">Interactive proof of every gap we fill in Go's <code style='color:#a5b4fc;'>database/sql</code> — click each demo to see it live.</p>
+                        </div>
+                        <button id="demo-run-all-btn" class="primary-btn" style="white-space:nowrap;">
+                            <span>▶ Run All Demos</span>
+                        </button>
+                    </div>
+                    <div class="demo-summary-bar" id="demo-summary-bar">
+                        <div class="demo-score"><span id="demo-passed">0</span> / <span id="demo-total">7</span> Demonstrated</div>
+                        <div class="demo-progress-track"><div class="demo-progress-fill" id="demo-progress-fill"></div></div>
+                    </div>
+                </header>
+
+                <div class="demo-cards-grid">
+
+                    <!-- DEMO 1: Unified API -->
+                    <div class="demo-card" id="demo-card-1">
+                        <div class="demo-card-badge">01</div>
+                        <div class="demo-card-header">
+                            <div class="demo-card-icon">🔗</div>
+                            <div>
+                                <h3>Unified Multi-DB Interface</h3>
+                                <span class="demo-tag tag-critical">CRITICAL GAP</span>
+                            </div>
+                        </div>
+                        <p class="demo-card-desc">Standard Go requires separate drivers, connection strings, and query patterns for each database. UniDB provides one API for all.</p>
+                        <div class="demo-comparison">
+                            <div class="demo-col demo-col-old">
+                                <div class="demo-col-label">❌ Standard Go</div>
+                                <pre><code class="language-go">// Need separate handles per DB
+pgDB, _ := sql.Open("postgres",
+  "host=localhost port=5432...")
+myDB, _ := sql.Open("mysql",
+  "root:pass@tcp(localhost:3307)/demo")
+
+// Different placeholder syntax!
+pgDB.Query("...WHERE id = $1", 1)
+myDB.Query("...WHERE id = ?", 1)
+// MongoDB? Completely different API!</code></pre>
+                            </div>
+                            <div class="demo-col demo-col-new">
+                                <div class="demo-col-label">✅ UniDB-Go</div>
+                                <pre><code class="language-go">// ONE interface for everything
+db, _ := api.Connect(
+  "postgres://user:pass@localhost/mydb",
+  api.WithMaxPool(20),
+)
+
+// Same API, any database
+db.Query(ctx, "SELECT * FROM users")
+db.Exec(ctx, "INSERT INTO ...")
+db.BeginTx(ctx, nil) // Transactions too</code></pre>
+                            </div>
+                        </div>
+                        <div class="demo-result" id="demo-result-1">
+                            <button class="demo-run-btn" data-demo="1">▶ Run Demo</button>
+                        </div>
+                    </div>
+
+                    <!-- DEMO 2: AST Parser -->
+                    <div class="demo-card" id="demo-card-2">
+                        <div class="demo-card-badge">02</div>
+                        <div class="demo-card-header">
+                            <div class="demo-card-icon">🧠</div>
+                            <div>
+                                <h3>SQL → AST Parsing Engine</h3>
+                                <span class="demo-tag tag-innovation">INNOVATION</span>
+                            </div>
+                        </div>
+                        <p class="demo-card-desc">Go's database/sql treats every query as an opaque string — zero understanding of structure. UniDB parses SQL into a full AST.</p>
+                        <div class="demo-comparison">
+                            <div class="demo-col demo-col-old">
+                                <div class="demo-col-label">❌ Standard Go</div>
+                                <pre><code class="language-go">// Go sees this as just a string:
+query := "SELECT u.name FROM users u"
+
+// No way to:
+// - Extract table names
+// - Detect joins
+// - Find columns
+// - Identify subqueries
+// It's completely OPAQUE</code></pre>
+                            </div>
+                            <div class="demo-col demo-col-new">
+                                <div class="demo-col-label">✅ UniDB-Go</div>
+                                <pre><code class="language-go">ast, _ := parser.Parse(query)
+
+// Full structural understanding:
+// ast.Type     → "SELECT"
+// ast.Tables   → [{Name:"users"}]
+// ast.Fields   → [{Name:"name"}]
+// ast.Joins    → [...]
+// ast.Conditions → [...]
+// Enables security, routing, planning!</code></pre>
+                            </div>
+                        </div>
+                        <div class="demo-result" id="demo-result-2">
+                            <button class="demo-run-btn" data-demo="2">▶ Run Demo</button>
+                        </div>
+                    </div>
+
+                    <!-- DEMO 3: Security Engine -->
+                    <div class="demo-card" id="demo-card-3">
+                        <div class="demo-card-badge">03</div>
+                        <div class="demo-card-header">
+                            <div class="demo-card-icon">🛡️</div>
+                            <div>
+                                <h3>Multi-Layer Security Engine</h3>
+                                <span class="demo-tag tag-critical">CRITICAL GAP</span>
+                            </div>
+                        </div>
+                        <p class="demo-card-desc">Standard Go only has parameterized queries. UniDB adds rule-based detection, AI scoring, exfiltration detection, and anomaly analysis.</p>
+                        <div class="demo-comparison">
+                            <div class="demo-col demo-col-old">
+                                <div class="demo-col-label">❌ Standard Go</div>
+                                <pre><code class="language-go">// Only protection: parameterized queries
+db.Query("SELECT * FROM users WHERE id=$1", id)
+
+// But if developer writes:
+db.Query("SELECT * FROM users WHERE id=" + id)
+// → SQL INJECTION! No warning!
+// No detection. No AI. No protection.
+// No exfiltration alerts.</code></pre>
+                            </div>
+                            <div class="demo-col demo-col-new">
+                                <div class="demo-col-label">✅ UniDB-Go</div>
+                                <pre><code class="language-go">db.Use(security.SecurityMiddleware(engine))
+
+// Layer 1: Rule-based (OR 1=1, UNION)
+// Layer 2: AI scoring (SLEEP, BENCHMARK)
+// Layer 3: Exfiltration (sensitive tables)
+// Layer 4: Anomaly (oversized queries)
+
+// Auto-blocks attacks, flags suspicious
+// queries — ZERO developer effort!</code></pre>
+                            </div>
+                        </div>
+                        <div class="demo-result" id="demo-result-3">
+                            <button class="demo-run-btn" data-demo="3">▶ Run Demo</button>
+                        </div>
+                    </div>
+
+                    <!-- DEMO 4: Cross-DB Federation -->
+                    <div class="demo-card" id="demo-card-4">
+                        <div class="demo-card-badge">04</div>
+                        <div class="demo-card-header">
+                            <div class="demo-card-icon">📡</div>
+                            <div>
+                                <h3>Cross-Database Federation</h3>
+                                <span class="demo-tag tag-innovation">INNOVATION</span>
+                            </div>
+                        </div>
+                        <p class="demo-card-desc">In standard Go, joining data across Postgres and MySQL means manual nested loops (O(n²)). UniDB does parallel fetch + hash join automatically.</p>
+                        <div class="demo-comparison">
+                            <div class="demo-col demo-col-old">
+                                <div class="demo-col-label">❌ Standard Go</div>
+                                <pre><code class="language-go">// Manual cross-DB join — PAINFUL
+pgRows, _ := pgDB.Query("SELECT...FROM users")
+myRows, _ := myDB.Query("SELECT...FROM orders")
+
+// O(n²) nested loop join!
+for _, u := range users {
+  for _, o := range orders {
+    if u.ID == o.UserID {
+      fmt.Println(u.Name, o.Total)
+    }
+  }
+}</code></pre>
+                            </div>
+                            <div class="demo-col demo-col-new">
+                                <div class="demo-col-label">✅ UniDB-Go</div>
+                                <pre><code class="language-go">// ONE query, automatic federation
+db.Query(ctx, `
+  SELECT u.name, o.total
+  FROM postgres.users u
+  JOIN mysql.orders o
+  ON u.id = o.user_id
+`)
+// → Step 1: Parallel SCAN postgres
+// → Step 2: Parallel SCAN mysql
+// → Step 3: Hash Join in-memory (O(n))</code></pre>
+                            </div>
+                        </div>
+                        <div class="demo-result" id="demo-result-4">
+                            <button class="demo-run-btn" data-demo="4">▶ Run Demo</button>
+                        </div>
+                    </div>
+
+                    <!-- DEMO 5: AI Router -->
+                    <div class="demo-card" id="demo-card-5">
+                        <div class="demo-card-badge">05</div>
+                        <div class="demo-card-header">
+                            <div class="demo-card-icon">🤖</div>
+                            <div>
+                                <h3>AI-Powered Query Router</h3>
+                                <span class="demo-tag tag-ai">AI / ML</span>
+                            </div>
+                        </div>
+                        <p class="demo-card-desc">Go's database/sql has zero query intelligence. UniDB uses a Naive Bayes classifier to predict the optimal database & dialect for any query.</p>
+                        <div class="demo-comparison">
+                            <div class="demo-col demo-col-old">
+                                <div class="demo-col-label">❌ Standard Go</div>
+                                <pre><code class="language-go">// Developer must know which DB to use
+if isOracle {
+  oracleDB.Query("...WHERE ROWNUM <= 10")
+} else if isMongo {
+  collection.Find(bson.M{...})
+} else {
+  pgDB.Query("...LIMIT 10")
+}
+// Manual, error-prone, no intelligence</code></pre>
+                            </div>
+                            <div class="demo-col demo-col-new">
+                                <div class="demo-col-label">✅ UniDB-Go</div>
+                                <pre><code class="language-go">// Naive Bayes ML model auto-detects:
+model.Predict("...WHERE ROWNUM <= 10")
+// → {DB: oracle, Dialect: OracleSQL}
+
+model.Predict("...JSON_EXTRACT(data)")
+// → {DB: mysql, Dialect: MySQL}
+
+model.Predict(`{"find": "users"}`)
+// → {DB: mongodb, Dialect: MQL}</code></pre>
+                            </div>
+                        </div>
+                        <div class="demo-result" id="demo-result-5">
+                            <button class="demo-run-btn" data-demo="5">▶ Run Demo</button>
+                        </div>
+                    </div>
+
+                    <!-- DEMO 6: Middleware Pipeline -->
+                    <div class="demo-card" id="demo-card-6">
+                        <div class="demo-card-badge">06</div>
+                        <div class="demo-card-header">
+                            <div class="demo-card-icon">🔄</div>
+                            <div>
+                                <h3>Middleware Pipeline</h3>
+                                <span class="demo-tag tag-architecture">ARCHITECTURE</span>
+                            </div>
+                        </div>
+                        <p class="demo-card-desc">database/sql has no concept of interceptors. UniDB provides composable middleware — stack security, metrics, caching, and custom logic.</p>
+                        <div class="demo-comparison">
+                            <div class="demo-col demo-col-old">
+                                <div class="demo-col-label">❌ Standard Go</div>
+                                <pre><code class="language-go">// No middleware concept at all
+db.Query(ctx, query) // Direct to driver
+
+// Want logging? Wrap manually
+// Want security? Write custom code
+// Want metrics? More boilerplate
+// Want caching? Even more code
+// None of this is composable!</code></pre>
+                            </div>
+                            <div class="demo-col demo-col-new">
+                                <div class="demo-col-label">✅ UniDB-Go</div>
+                                <pre><code class="language-go">// Composable middleware pipeline
+db.Use(security.SecurityMiddleware(eng))
+db.Use(metrics.MetricsMiddleware())
+db.Use(myCustomMiddleware())
+
+// Every query auto-flows through:
+// Security → Metrics → Custom → Driver
+// Clean chain-of-responsibility pattern</code></pre>
+                            </div>
+                        </div>
+                        <div class="demo-result" id="demo-result-6">
+                            <button class="demo-run-btn" data-demo="6">▶ Run Demo</button>
+                        </div>
+                    </div>
+
+                    <!-- DEMO 7: Auto-Tuning Pool + Circuit Breaker -->
+                    <div class="demo-card" id="demo-card-7">
+                        <div class="demo-card-badge">07</div>
+                        <div class="demo-card-header">
+                            <div class="demo-card-icon">🏊</div>
+                            <div>
+                                <h3>Auto-Tuning Pool + Circuit Breaker</h3>
+                                <span class="demo-tag tag-innovation">INNOVATION</span>
+                            </div>
+                        </div>
+                        <p class="demo-card-desc">Go's connection pool is static. UniDB dynamically resizes based on load and adds per-database circuit breakers for fault tolerance.</p>
+                        <div class="demo-comparison">
+                            <div class="demo-col demo-col-old">
+                                <div class="demo-col-label">❌ Standard Go</div>
+                                <pre><code class="language-go">// Static pool — never adapts
+db.SetMaxOpenConns(25)
+db.SetMaxIdleConns(5)
+
+// If load spikes → connections exhausted
+// If load drops → idle connections wasted
+// If DB fails → no circuit breaker
+// App keeps hammering dead DB!</code></pre>
+                            </div>
+                            <div class="demo-col demo-col-new">
+                                <div class="demo-col-label">✅ UniDB-Go</div>
+                                <pre><code class="language-go">pool := pool.NewConnectionPool(20, createFn)
+// AutoTune() goroutine monitors every 5s:
+// → Exhausted > 5? Scale UP (+5)
+// → Idle > 10?     Scale DOWN (-2)
+
+mgr.ExecuteWithBreaker("postgres", func(){
+  // 5 failures → circuit OPENS
+  // 30s timeout → auto RECOVERS
+})</code></pre>
+                            </div>
+                        </div>
+                        <div class="demo-result" id="demo-result-7">
+                            <button class="demo-run-btn" data-demo="7">▶ Run Demo</button>
+                        </div>
+                    </div>
+
+                </div>
             </div>
 
         </main>
