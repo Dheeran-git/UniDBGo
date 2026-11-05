@@ -211,3 +211,18 @@ func TestPostgresCastExtraction(t *testing.T) {
 		}
 	}
 }
+
+func TestAggregateComparisonIsNotInference(t *testing.T) {
+	e := NewSecurityEngine()
+	for _, q := range []string{
+		"SELECT f1 FROM follows GROUP BY f1 HAVING count(*) > (SELECT count(*) FROM users WHERE name = 'Tyler')",
+		"SELECT dept FROM staff GROUP BY dept HAVING avg(salary) > (SELECT avg(salary) FROM users)",
+	} {
+		if d := e.Analyze(q); d.Block {
+			t.Errorf("%s: blocked (%s)", q, d.Reason)
+		}
+	}
+	if d := e.Analyze("SELECT id FROM accounts WHERE id = 1 AND (SELECT count(*) FROM users) > 3"); !d.Block {
+		t.Error("constant comparison with a restricted sub-query must stay blocked")
+	}
+}

@@ -351,6 +351,10 @@ func (e *SecurityEngine) inferenceProbe(cmp sqlparser.Expr) Decision {
 			}
 		case *sqlparser.ColName:
 			column = true
+		case sqlparser.AggrFunc:
+			// COUNT(*) and other aggregates depend on the outer rows even
+			// without a column reference (HAVING count(*) > (SELECT ...)).
+			column = true
 		case *sqlparser.Subquery:
 			for _, t := range allTables(n) {
 				if e.restricted(t.Name.String()) && probe == "" {
