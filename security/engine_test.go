@@ -226,3 +226,65 @@ func TestAggregateComparisonIsNotInference(t *testing.T) {
 		t.Error("constant comparison with a restricted sub-query must stay blocked")
 	}
 }
+
+// Bypasses found by the advanced-technique suite and verified on live servers.
+func TestAdvancedBypassesBlocked(t *testing.T) {
+	e := NewSecurityEngine("api_keys")
+	cases := []struct {
+		q string
+		d parser.Dialect
+	}{
+		{"SELECT * FROM accounts WHERE id = 1 /*!80041 OR 1=1 */", parser.MySQL},
+		{"SELECT * FROM accounts WHERE id = 1 /*!80046 OR 1=1 */", parser.MySQL},
+		{"SELECT * FROM accounts WHERE id = 1 /*!80041 UNION SELECT id,secret,id FROM api_keys */", parser.MySQL},
+		{"SELECT * FROM accounts WHERE id = 1 OR (SELECT 1)=1", parser.MySQL},
+		{"SELECT * FROM accounts WHERE id = 1 OR EXISTS(SELECT 1)", parser.MySQL},
+		{"SELECT * FROM accounts WHERE id = 1 OR UNHEX('41')='A'", parser.MySQL},
+		{"SELECT * FROM accounts WHERE id = 1 OR CHR(65)||CHR(66)='AB'", parser.Postgres},
+		{"SELECT * FROM accounts WHERE id = 1 OR 'ad'||'min'='admin'", parser.Postgres},
+		{"DO SLEEP(5)", parser.MySQL},
+	}
+	for _, c := range cases {
+		if d := e.AnalyzeFor(c.q, c.d); !d.Block {
+			t.Errorf("%s (%s): not blocked", c.q, c.d)
+		}
+	}
+	benign := []struct {
+		q string
+		d parser.Dialect
+	}{
+		{"SELECT 'Dr. ' || name FROM accounts WHERE id = $1", parser.Postgres},
+		{"SELECT id FROM accounts WHERE first || ' ' || last = $1 OR email = $2", parser.Postgres},
+		{"SELECT id FROM orders WHERE status = 'paid' OR EXISTS (SELECT 1 FROM refunds r WHERE r.order_id = orders.id)", parser.MySQL},
+		{"SELECT id FROM t WHERE a = 1 OR 1=0", parser.MySQL},
+		{"SELECT id FROM t WHERE a = ? OR b = ?", parser.MySQL},
+		{"SELECT /*!40001 SQL_NO_CACHE */ id FROM t WHERE id = 1", parser.MySQL},
+	}
+	for _, c := range benign {
+		if d := e.AnalyzeFor(c.q, c.d); d.Block {
+			t.Errorf("%s (%s): blocked: %s", c.q, c.d, d.Reason)
+		}
+	}
+}
+
+func TestPrepareAndOutfile(t *testing.T) {
+	e := NewSecurityEngine("api_keys")
+	for _, q := range []string{
+		"PREPARE s FROM 'SELECT * FROM accounts WHERE id = 1 OR 1=1'",
+		"PREPARE s FROM 'SELECT 1; DROP TABLE accounts'",
+		"SELECT secret FROM api_keys WHERE id = 1 INTO OUTFILE '/tmp/x'",
+		"SELECT name FROM accounts WHERE id = 1 INTO DUMPFILE '/tmp/y'",
+	} {
+		if d := e.Analyze(q); !d.Block {
+			t.Errorf("%s: not blocked", q)
+		}
+	}
+	for _, q := range []string{
+		"PREPARE s FROM 'SELECT name FROM accounts WHERE id = ?'",
+		"SELECT name FROM accounts WHERE id = 1 INTO @n",
+	} {
+		if d := e.Analyze(q); d.Block {
+			t.Errorf("%s: blocked: %s", q, d.Reason)
+		}
+	}
+}

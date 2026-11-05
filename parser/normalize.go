@@ -43,6 +43,7 @@ func NormalizeDialect(query string) string { return Normalize(query, MySQL) }
 //	"Name"       ->  `Name`         (double quotes delimit identifiers)
 //	$$text$$     ->  'text'         (dollar-quoted strings)
 //	a # b        ->  a ^ b          (# is XOR, not a comment)
+//	a || b       ->  a + b          (concatenation, not OR)
 //
 // E'...' strings keep backslash escapes, as in PostgreSQL.
 func Normalize(query string, d Dialect) string {
@@ -84,6 +85,12 @@ func Normalize(query string, d Dialect) string {
 		case c == '#' && pg:
 			b.WriteByte('^')
 			i++
+		case c == '|' && pg && i+1 < n && query[i+1] == '|':
+			// PostgreSQL concatenation, which MySQL reads as OR. Arithmetic
+			// '+' has the same place in the precedence order, so the tree
+			// keeps PostgreSQL's structure.
+			b.WriteString(" + ")
+			i += 2
 		case pg && (c == 'E' || c == 'e') && i+1 < n && query[i+1] == '\'' && (i == 0 || !isIdent(query[i-1])):
 			i++ // E'...' keeps backslash escapes, which MySQL also uses; drop the prefix
 		case c == '\'' || c == '"' || c == '`':
@@ -147,7 +154,7 @@ func needsNormalization(q string, d Dialect) bool {
 		switch q[i] {
 		case '$', ':':
 			return true
-		case '\\', '"', '#':
+		case '\\', '"', '#', '|':
 			if d == Postgres {
 				return true
 			}
@@ -365,7 +372,7 @@ func Bind(sql string, d Dialect) string {
 }
 
 // DialectSensitive reports whether query contains anything that PostgreSQL
-// and MySQL read differently: backslashes, double quotes, '#', E” or
+// and MySQL read differently: backslashes, double quotes, '#', '||', E” or
 // dollar-quoted strings. It allocates nothing, so callers can skip a second,
 // dialect-specific parse for the common case.
 func DialectSensitive(query string) bool {
@@ -373,6 +380,10 @@ func DialectSensitive(query string) bool {
 		switch query[i] {
 		case '\\', '"', '#':
 			return true
+		case '|':
+			if i+1 < len(query) && query[i+1] == '|' {
+				return true // concatenation in PostgreSQL, OR in MySQL
+			}
 		case '$':
 			if dollarTagAt(query, i) != "" {
 				return true

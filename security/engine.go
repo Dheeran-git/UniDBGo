@@ -266,6 +266,33 @@ type errStop struct{ d Decision }
 func (errStop) Error() string { return "stop" }
 
 func (e *SecurityEngine) inspect(stmt sqlparser.Statement) Decision {
+	if _, ok := stmt.(*sqlparser.OtherAdmin); ok {
+		// The parser keeps no tree for these statements (DO SLEEP(5),
+		// OPTIMIZE TABLE ...), so they cannot be inspected: treat them like
+		// unparseable text.
+		if e.AllowUnparseable {
+			return flag(CatUnparseable, "Statement not inspected: the parser keeps no syntax tree for it")
+		}
+		return block(CatUnparseable, "Statement rejected: the parser keeps no syntax tree for it")
+	}
+	if p, ok := stmt.(*sqlparser.PrepareStmt); ok {
+		// PREPARE s FROM '<sql>': the prepared text is SQL that EXECUTE will
+		// run later, so it is inspected like a statement of its own. A
+		// statement prepared from a variable cannot be seen here.
+		if lit, ok := p.Statement.(*sqlparser.Literal); ok && lit.Type == sqlparser.StrVal {
+			stmts, err := parser.StatementsFor(lit.Val, parser.MySQL)
+			switch {
+			case errors.Is(err, parser.ErrMultiStatement) || len(stmts) > 1:
+				return block(CatPiggyback, "Piggy-backed query inside PREPARE")
+			case err != nil || len(stmts) == 0:
+				if e.AllowUnparseable {
+					return flag(CatUnparseable, "Prepared statement could not be parsed: %v", err)
+				}
+				return block(CatUnparseable, "Prepared statement rejected: %v", err)
+			}
+			return e.inspect(stmts[0])
+		}
+	}
 	var flagged Decision
 	_, topUnion := stmt.(*sqlparser.Union)
 
@@ -277,10 +304,18 @@ func (e *SecurityEngine) inspect(stmt sqlparser.Statement) Decision {
 					return false, errStop{block(CatTautology,
 						"Tautology: disjunct %q is always true", sqlparser.String(branch))}
 				}
+				if rowIndependent(branch) {
+					return false, errStop{block(CatTautology,
+						"Tautology: disjunct %q does not depend on any row or parameter", sqlparser.String(branch))}
+				}
 			}
 		case *sqlparser.FuncExpr:
 			if name := n.Name.Lowered(); dangerousFunctions[name] {
 				return false, errStop{block(CatTimingFunction, "Dangerous function call: %s()", name)}
+			}
+		case *sqlparser.SelectInto:
+			if n.Type == sqlparser.IntoOutfile || n.Type == sqlparser.IntoOutfileS3 || n.Type == sqlparser.IntoDumpfile {
+				return false, errStop{block(CatTimingFunction, "File write: SELECT ... INTO OUTFILE/DUMPFILE")}
 			}
 		case *sqlparser.LockingFunc:
 			if n.Type == sqlparser.GetLock {
@@ -549,6 +584,30 @@ func isTautology(e sqlparser.Expr) bool {
 		}
 	}
 	return false
+}
+
+// rowIndependent reports whether e is a constant the static evaluator could
+// not decide: it references no column (not even inside a sub-query), bind
+// parameter, variable or aggregate, so its value is the same for every row
+// and every request, as in (SELECT 1)=1, EXISTS(SELECT 1) or UNHEX('41')='A'.
+// Such a disjunct either never or always matches; written into an OR it is a
+// tautology the evaluator cannot prove, and legitimate queries have no use
+// for it. Disjuncts the evaluator can decide (OR 1=0) are left to eval.
+func rowIndependent(e sqlparser.Expr) bool {
+	if _, ok := eval(e); ok {
+		return false
+	}
+	independent := true
+	_ = sqlparser.Walk(func(node sqlparser.SQLNode) (bool, error) {
+		switch node.(type) {
+		case *sqlparser.ColName, *sqlparser.Argument, *sqlparser.Variable, sqlparser.AggrFunc,
+			*sqlparser.ValuesFuncExpr, *sqlparser.Default:
+			independent = false
+			return false, errStop{}
+		}
+		return true, nil
+	}, e)
+	return independent
 }
 
 // disjuncts flattens nested OR expressions (the parser drops parentheses).

@@ -9,8 +9,16 @@ import (
 )
 
 // vparser is the Vitess parser, configured for the MySQL 8.0 grammar.
+// analysisServerVersion is the MySQL version the tokenizer assumes when it
+// decides whether the body of a versioned comment /*!NNNNN ... */ is code.
+// MySQL executes the body when NNNNN is at most its own version, so a parser
+// pinned to an older version than the server skips code the server runs
+// (/*!80046 OR 1=1 */ against MySQL 8.0.46). The highest representable
+// version treats every versioned comment as code, whatever the server.
+const analysisServerVersion = "9.99.99"
+
 var vparser = func() *sqlparser.Parser {
-	p, err := sqlparser.New(sqlparser.Options{MySQLServerVersion: "8.0.40"})
+	p, err := sqlparser.New(sqlparser.Options{MySQLServerVersion: analysisServerVersion})
 	if err != nil {
 		panic(err)
 	}
