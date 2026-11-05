@@ -473,6 +473,12 @@ func selectsMetadata(sel sqlparser.TableStatement) string {
 // system catalogs (anywhere in the branch, including sub-queries), that
 // select server metadata, or, for a top-level UNION, that select only
 // constants (column-count probing).
+//
+// The operands of INTERSECT and EXCEPT reach here as UNION branches too: the
+// parser represents such a query as a chain of UNIONs (parser.QueryAST.SetOps
+// names the real operators). The rules apply to them unchanged. A branch can
+// leak data through INTERSECT or EXCEPT as well, by whether rows survive, and
+// a constant-only branch probes the column count exactly as with UNION.
 func (e *SecurityEngine) checkUnionBranch(sel *sqlparser.Select, topLevel bool) Decision {
 	for _, t := range allTables(sel) {
 		if isCatalog(t) || e.restricted(t.Name.String()) {
@@ -603,7 +609,8 @@ func allTables(node sqlparser.SQLNode) []sqlparser.TableName {
 // query ("admin'-- "). It blocks when the comment ends the input and its
 // text continues the statement as SQL: a boolean connective followed by a
 // comparison (AND password = ...), ORDER BY / GROUP BY, LIMIT n, or UNION
-// SELECT. Prose such as "-- don't remove" or "-- from 2024" is allowed.
+// SELECT (or INTERSECT / EXCEPT SELECT). Prose such as "-- don't remove" or
+// "-- from 2024" is allowed.
 func checkTrailingComment(query string, d parser.Dialect) Decision {
 	if !strings.ContainsAny(query, "#-/") {
 		return Decision{} // no comment opener at all
@@ -659,6 +666,8 @@ func sqlContinuation(body string) string {
 			toks = append(toks, "<STR>")
 		case typ == sqlparser.INTEGRAL:
 			toks = append(toks, "<NUM>")
+		case typ == sqlparser.ID && (strings.EqualFold(val, "INTERSECT") || strings.EqualFold(val, "EXCEPT")):
+			toks = append(toks, strings.ToUpper(val)) // set operators Vitess reads as identifiers
 		case typ == sqlparser.ID:
 			toks = append(toks, "<ID>")
 		case typ == sqlparser.LE, typ == sqlparser.GE, typ == sqlparser.NE, typ == sqlparser.NULL_SAFE_EQUAL:
@@ -686,10 +695,10 @@ func sqlContinuation(body string) string {
 			if i+1 < len(toks) && toks[i+1] == "<NUM>" {
 				return "LIMIT"
 			}
-		case "UNION":
+		case "UNION", "INTERSECT", "EXCEPT":
 			for _, u := range toks[i+1 : min(len(toks), i+3)] {
 				if u == "SELECT" {
-					return "UNION SELECT"
+					return t + " SELECT"
 				}
 			}
 		}

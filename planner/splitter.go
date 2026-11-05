@@ -17,6 +17,16 @@ var ErrUnsupportedFederation = errors.New("unsupported federated query")
 // WHERE clause that reference a single table are pushed into that table's
 // SCAN query; the join itself is executed in memory by the federation engine.
 func planFederatedQuery(ast *parser.QueryAST, meta QueryMetadata) (*ExecutionPlan, error) {
+	if _, ok := ast.Stmt.(*sqlparser.Union); ok {
+		// UNION, INTERSECT and EXCEPT are never federated. The tree of a query
+		// using INTERSECT or EXCEPT is a synthetic UNION chain that must not be
+		// rendered, so it is rejected here before any rewriting.
+		ops := "UNION"
+		if len(ast.SetOps) > 0 {
+			ops = strings.Join(ast.SetOps, ", ")
+		}
+		return nil, fmt.Errorf("%w: set operations (%s) across databases are not supported", ErrUnsupportedFederation, ops)
+	}
 	sel, ok := ast.Stmt.(*sqlparser.Select)
 	if !ok || len(sel.From) != 1 {
 		return nil, fmt.Errorf("%w: expected a single SELECT ... JOIN", ErrUnsupportedFederation)
