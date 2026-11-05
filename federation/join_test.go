@@ -65,3 +65,19 @@ func TestHashJoinMatchesNestedLoop(t *testing.T) {
 		}
 	}
 }
+
+func TestNormalizeKeyOtherTypes(t *testing.T) {
+	type uuid [4]byte
+	a, okA := NormalizeKey(uuid{1, 2, 3, 4})
+	b, okB := NormalizeKey(uuid{1, 2, 3, 4})
+	c, _ := NormalizeKey(uuid{9, 9, 9, 9})
+	if !okA || !okB || a != b || a == c {
+		t.Fatalf("same-typed keys: %q %q %q", a, b, c)
+	}
+	if k, _ := NormalizeKey([4]int{1, 2, 3, 4}); k == a {
+		t.Fatal("different Go types must not join")
+	}
+	if _, ok := NormalizeKey(nil); ok {
+		t.Fatal("NULL must not join")
+	}
+}

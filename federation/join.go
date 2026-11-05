@@ -182,8 +182,10 @@ func fnv64a(s string) uint64 {
 // from different engines compare equal: lib/pq returns int64 while the MySQL
 // text protocol returns []byte("42"), and both must match. Integral numbers
 // (including integral floats and numeric strings) become "n:<int>", other
-// numbers "f:<float>", text "s:<text>" and times "t:<RFC3339 UTC>". NULL
-// yields ok=false.
+// numbers "f:<float>", text "s:<text>", times "t:<RFC3339 UTC>" and any other
+// type "o:<type>:<value>". NULL yields ok=false. Mixed numeric types compare
+// as MySQL compares them: integers exactly up to 64 bits, everything else as
+// float64.
 func NormalizeKey(v any) (key string, ok bool) {
 	switch x := v.(type) {
 	case nil:
@@ -224,7 +226,9 @@ func NormalizeKey(v any) (key string, ok bool) {
 	case time.Time:
 		return "t:" + x.UTC().Format(time.RFC3339Nano), true
 	}
-	return "", false
+	// Other driver types (UUID arrays, custom scanners, ...) join only with
+	// values of the same Go type and printed form, never across types.
+	return fmt.Sprintf("o:%T:%v", v, v), true
 }
 
 func normFloat(f float64) string {
