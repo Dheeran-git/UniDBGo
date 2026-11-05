@@ -312,3 +312,47 @@ func TestPostgresOperatorSemantics(t *testing.T) {
 		}
 	}
 }
+
+func TestTruncationAfterClosedLiteral(t *testing.T) {
+	e := NewSecurityEngine()
+	cases := []struct {
+		q string
+		d parser.Dialect
+	}{
+		// "--" without a space is a comment only in PostgreSQL; in MySQL it is
+		// two minus signs and the password predicate stays in force.
+		{"SELECT id FROM accounts WHERE name='admin'--'' AND password='x'", parser.Postgres},
+		{"SELECT id FROM accounts WHERE name='admin'--x' AND password='x'", parser.Postgres},
+		{"SELECT id FROM accounts WHERE name='admin'-- '' AND password='x'", parser.Postgres},
+		{"SELECT id FROM accounts WHERE name='admin'-- '' AND password='x'", parser.MySQL},
+	}
+	for _, c := range cases {
+		if dec := e.AnalyzeFor(c.q, c.d); !dec.Block {
+			t.Errorf("%s (%s): not blocked", c.q, c.d)
+		}
+	}
+	for _, q := range []string{
+		"SELECT id FROM accounts WHERE id = 1 -- don't change: used by the 'nightly' job",
+		"SELECT id FROM accounts WHERE id = 1 /*action='index',controller='users'*/",
+	} {
+		if dec := e.Analyze(q); dec.Block {
+			t.Errorf("%s: blocked: %s", q, dec.Reason)
+		}
+	}
+}
+
+func TestPostgresStringComparisons(t *testing.T) {
+	e := NewSecurityEngine()
+	for _, q := range []string{
+		"SELECT * FROM t WHERE id = 1 OR 'a' <> 'A'",
+		"SELECT * FROM t WHERE id = 1 OR 'a' NOT LIKE 'A'",
+		"SELECT * FROM t WHERE id = 1 OR 'B' < 'a'",
+	} {
+		if d := e.AnalyzeFor(q, parser.Postgres); !d.Block {
+			t.Errorf("%s: not blocked under PostgreSQL rules", q)
+		}
+	}
+	if d := e.AnalyzeFor("SELECT * FROM t WHERE name = 'x' OR email = 'y'", parser.Postgres); d.Block {
+		t.Errorf("benign disjunction blocked: %s", d.Reason)
+	}
+}

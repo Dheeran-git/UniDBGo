@@ -613,8 +613,9 @@ func rowIndependent(e sqlparser.Expr, d parser.Dialect) bool {
 // evalFor evaluates e statically for dialect d. The evaluator implements
 // MySQL semantics; PostgreSQL gives some operators other meanings (integer
 // division for '/', power for '^', concatenation for '||', which the analysis
-// reads as '+'), so for PostgreSQL an expression using them is left undecided
-// and falls to the row-independence rule instead.
+// reads as '+', and case-sensitive string comparison), so for PostgreSQL an
+// expression using them is left undecided and falls to the row-independence
+// rule instead.
 func evalFor(e sqlparser.Expr, d parser.Dialect) (value, bool) {
 	if d == parser.Postgres && usesDivergentOperator(e) {
 		return value{}, false
@@ -625,9 +626,21 @@ func evalFor(e sqlparser.Expr, d parser.Dialect) (value, bool) {
 func usesDivergentOperator(e sqlparser.Expr) bool {
 	found := false
 	_ = sqlparser.Walk(func(node sqlparser.SQLNode) (bool, error) {
-		if b, ok := node.(*sqlparser.BinaryExpr); ok {
+		switch b := node.(type) {
+		case *sqlparser.BinaryExpr:
 			switch b.Operator {
 			case sqlparser.PlusOp, sqlparser.DivOp, sqlparser.IntDivOp, sqlparser.ModOp, sqlparser.BitXorOp:
+				found = true
+				return false, errStop{}
+			}
+		case *sqlparser.ComparisonExpr:
+			// PostgreSQL compares strings case-sensitively and by collation
+			// order; MySQL's case-insensitive result does not carry over.
+			if l, ok := eval(b.Left); ok && l.kind == 's' {
+				found = true
+				return false, errStop{}
+			}
+			if r, ok := eval(b.Right); ok && r.kind == 's' {
 				found = true
 				return false, errStop{}
 			}
@@ -742,8 +755,26 @@ func checkTrailingComment(query string, d parser.Dialect) Decision {
 // would contribute to the statement had it not been commented out.
 func sqlContinuation(body string) string {
 	body = strings.TrimSpace(body)
-	body = strings.TrimPrefix(body, "'") // the rest of a literal the payload closed
-	body = strings.TrimPrefix(body, `"`)
+	if c := continuationTokens(body); c != "" {
+		return c
+	}
+	// The payload may have closed a literal anywhere in the comment, as in
+	// admin'--'' AND password = '...': try the text after each of the first
+	// few quotes as well.
+	for i, tries := 0, 0; i < len(body) && tries < 8; i++ {
+		if body[i] == '\'' || body[i] == '"' {
+			tries++
+			if c := continuationTokens(body[i+1:]); c != "" {
+				return c
+			}
+		}
+	}
+	return ""
+}
+
+// continuationTokens reports SQL that body would add to the statement if it
+// were not commented out ("" if none).
+func continuationTokens(body string) string {
 	tkn := parser.NewTokenizer(body)
 	var toks []string
 	for len(toks) < 64 {
