@@ -34,7 +34,7 @@ var (
 
 func main() {
 	flag.Usage = func() {
-		fmt.Fprintln(os.Stderr, "usage: unidb-bench [flags] security|router|join|setup|latency|throughput|fedscale|latencyci|throughputci")
+		fmt.Fprintln(os.Stderr, "usage: unidb-bench [flags] security|router|join|setup|latency|throughput|fedscale|latencyci|throughputci|mixed")
 		flag.VisitAll(func(f *flag.Flag) {
 			if !strings.HasPrefix(f.Name, "child-") { // internal re-exec flags stay hidden
 				fmt.Fprintf(os.Stderr, "  -%s\n    \t%s (default %q)\n", f.Name, f.Usage, f.DefValue)
@@ -71,6 +71,8 @@ func main() {
 		err = runLatencyCI()
 	case "throughputci":
 		err = runThroughputCI()
+	case "mixed":
+		err = runMixed()
 	default:
 		flag.Usage()
 		os.Exit(2)
