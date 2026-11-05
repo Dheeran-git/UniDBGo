@@ -250,7 +250,7 @@ func (e *Engine) Exec(ctx context.Context, query string, args ...any) (internal.
 		return nil, perr
 	}
 	target := e.Default
-	if perr == nil && len(ast.Tables) > 0 && ast.Tables[0].Database != "" {
+	if perr == nil && qualified(ast) {
 		plan, err := planner.GeneratePlan(ast)
 		if err != nil {
 			return nil, err
@@ -265,6 +265,16 @@ func (e *Engine) Exec(ctx context.Context, query string, args ...any) (internal.
 		return nil, fmt.Errorf("engine: no source registered for %q", target)
 	}
 	return db.Exec(ctx, query, args...)
+}
+
+// qualified reports whether any table of ast names a database.
+func qualified(ast *parser.QueryAST) bool {
+	for _, t := range ast.Tables {
+		if t.Database != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func (e *Engine) source(name string) *api.DB {
