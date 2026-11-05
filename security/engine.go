@@ -234,7 +234,7 @@ func (e *SecurityEngine) analyze(query string, ast *parser.QueryAST, parseErr er
 		if parseErr == nil || errors.Is(parseErr, parser.ErrInvalidQuery) || errors.Is(parseErr, parser.ErrUnsupportedQuery) {
 			// The grammar accepted the text but the summary did not; inspect the raw tree.
 			if stmts, err := parser.StatementsFor(query, d); err == nil && len(stmts) == 1 {
-				return e.finish(query, e.inspect(stmts[0]))
+				return e.finish(query, e.inspect(stmts[0], d))
 			}
 		}
 		if e.AllowUnparseable {
@@ -243,7 +243,7 @@ func (e *SecurityEngine) analyze(query string, ast *parser.QueryAST, parseErr er
 		return block(CatUnparseable, "Query rejected: %v", parseErr)
 	}
 
-	return e.finish(query, e.inspect(ast.Stmt))
+	return e.finish(query, e.inspect(ast.Stmt, d))
 }
 
 func (e *SecurityEngine) finish(query string, d Decision) Decision {
@@ -265,7 +265,7 @@ type errStop struct{ d Decision }
 
 func (errStop) Error() string { return "stop" }
 
-func (e *SecurityEngine) inspect(stmt sqlparser.Statement) Decision {
+func (e *SecurityEngine) inspect(stmt sqlparser.Statement, d parser.Dialect) Decision {
 	if _, ok := stmt.(*sqlparser.OtherAdmin); ok {
 		// The parser keeps no tree for these statements (DO SLEEP(5),
 		// OPTIMIZE TABLE ...), so they cannot be inspected: treat them like
@@ -290,7 +290,7 @@ func (e *SecurityEngine) inspect(stmt sqlparser.Statement) Decision {
 				}
 				return block(CatUnparseable, "Prepared statement rejected: %v", err)
 			}
-			return e.inspect(stmts[0])
+			return e.inspect(stmts[0], parser.MySQL)
 		}
 	}
 	var flagged Decision
@@ -300,11 +300,11 @@ func (e *SecurityEngine) inspect(stmt sqlparser.Statement) Decision {
 		switch n := node.(type) {
 		case *sqlparser.OrExpr:
 			for _, branch := range disjuncts(n) {
-				if isTautology(branch) {
+				if isTautology(branch, d) {
 					return false, errStop{block(CatTautology,
 						"Tautology: disjunct %q is always true", sqlparser.String(branch))}
 				}
-				if rowIndependent(branch) {
+				if rowIndependent(branch, d) {
 					return false, errStop{block(CatTautology,
 						"Tautology: disjunct %q does not depend on any row or parameter", sqlparser.String(branch))}
 				}
@@ -572,8 +572,8 @@ func isCatalog(t sqlparser.TableName) bool {
 
 // isTautology reports whether a disjunct is always true: either its static
 // value is true, or it compares an expression with itself.
-func isTautology(e sqlparser.Expr) bool {
-	if v, ok := eval(e); ok {
+func isTautology(e sqlparser.Expr, d parser.Dialect) bool {
+	if v, ok := evalFor(e, d); ok {
 		return v.truthy()
 	}
 	if c, ok := e.(*sqlparser.ComparisonExpr); ok {
@@ -593,8 +593,8 @@ func isTautology(e sqlparser.Expr) bool {
 // Such a disjunct either never or always matches; written into an OR it is a
 // tautology the evaluator cannot prove, and legitimate queries have no use
 // for it. Disjuncts the evaluator can decide (OR 1=0) are left to eval.
-func rowIndependent(e sqlparser.Expr) bool {
-	if _, ok := eval(e); ok {
+func rowIndependent(e sqlparser.Expr, d parser.Dialect) bool {
+	if _, ok := evalFor(e, d); ok {
 		return false
 	}
 	independent := true
@@ -608,6 +608,33 @@ func rowIndependent(e sqlparser.Expr) bool {
 		return true, nil
 	}, e)
 	return independent
+}
+
+// evalFor evaluates e statically for dialect d. The evaluator implements
+// MySQL semantics; PostgreSQL gives some operators other meanings (integer
+// division for '/', power for '^', concatenation for '||', which the analysis
+// reads as '+'), so for PostgreSQL an expression using them is left undecided
+// and falls to the row-independence rule instead.
+func evalFor(e sqlparser.Expr, d parser.Dialect) (value, bool) {
+	if d == parser.Postgres && usesDivergentOperator(e) {
+		return value{}, false
+	}
+	return eval(e)
+}
+
+func usesDivergentOperator(e sqlparser.Expr) bool {
+	found := false
+	_ = sqlparser.Walk(func(node sqlparser.SQLNode) (bool, error) {
+		if b, ok := node.(*sqlparser.BinaryExpr); ok {
+			switch b.Operator {
+			case sqlparser.PlusOp, sqlparser.DivOp, sqlparser.IntDivOp, sqlparser.ModOp, sqlparser.BitXorOp:
+				found = true
+				return false, errStop{}
+			}
+		}
+		return true, nil
+	}, e)
+	return found
 }
 
 // disjuncts flattens nested OR expressions (the parser drops parentheses).

@@ -244,3 +244,16 @@ func BenchmarkHashJoinGeneric(b *testing.B) {
 		}
 	}
 }
+
+func TestNormalizeKeySQLNumericSyntax(t *testing.T) {
+	for _, s := range []string{"1_000", "0x1Ap0", "Inf", "NaN", "1e", "."} {
+		if k, _ := NormalizeKey(s); k != "s:"+s {
+			t.Errorf("%q: got %q, want text", s, k)
+		}
+	}
+	for s, want := range map[string]string{"42": "n:42", " 42 ": "n:42", "42.0": "n:42", "4.2e1": "n:42", "-7": "n:-7", "2.5": "f:2.5"} {
+		if k, _ := NormalizeKey(s); k != want {
+			t.Errorf("%q: got %q, want %q", s, k, want)
+		}
+	}
+}

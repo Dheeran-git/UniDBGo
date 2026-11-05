@@ -28,35 +28,56 @@ func IsDocument(query string) bool {
 // AnalyzeDocument inspects a JSON command document. SQL invariants do not
 // apply to documents; instead the document is decoded and rejected if any key,
 // at any depth, invokes server-side JavaScript ($where, $function,
-// $accumulator, mapReduce). Documents that are not valid JSON are rejected.
+// $accumulator, mapReduce, $eval). Documents that are not valid JSON are rejected.
 func (e *SecurityEngine) AnalyzeDocument(doc string) Decision {
-	var v any
-	if err := json.Unmarshal([]byte(doc), &v); err != nil {
-		return block(CatUnparseable, "invalid command document: %v", err)
+	if !json.Valid([]byte(doc)) {
+		return block(CatUnparseable, "invalid command document")
 	}
-	if op := findServerCode(v); op != "" {
+	if op := findServerCode(doc); op != "" {
 		return block(CatServerCode, "command document uses %s, which executes JavaScript on the server", op)
 	}
 	return Decision{}
 }
 
-func findServerCode(v any) string {
-	switch t := v.(type) {
-	case map[string]any:
-		for k, child := range t {
-			if serverCodeOperators[strings.ToLower(k)] {
-				return k
-			}
-			if op := findServerCode(child); op != "" {
-				return op
-			}
+// findServerCode streams the document's tokens, so that every key is seen,
+// including keys repeated within one object: a map would keep only the last
+// of them, while the MongoDB driver forwards all of them.
+func findServerCode(doc string) string {
+	dec := json.NewDecoder(strings.NewReader(doc))
+	type frame struct{ object, expectKey bool }
+	var stack []frame
+	for {
+		tok, err := dec.Token()
+		if err != nil {
+			return ""
 		}
-	case []any:
-		for _, child := range t {
-			if op := findServerCode(child); op != "" {
-				return op
+		top := len(stack) - 1
+		switch t := tok.(type) {
+		case json.Delim:
+			switch t {
+			case '{', '[':
+				if top >= 0 && stack[top].object {
+					stack[top].expectKey = true // the nested value completes a member
+				}
+				stack = append(stack, frame{object: t == '{', expectKey: t == '{'})
+			default:
+				stack = stack[:top]
+			}
+		case string:
+			if top >= 0 && stack[top].object {
+				if stack[top].expectKey {
+					if serverCodeOperators[strings.ToLower(t)] {
+						return t
+					}
+					stack[top].expectKey = false
+				} else {
+					stack[top].expectKey = true
+				}
+			}
+		default:
+			if top >= 0 && stack[top].object {
+				stack[top].expectKey = true
 			}
 		}
 	}
-	return ""
 }

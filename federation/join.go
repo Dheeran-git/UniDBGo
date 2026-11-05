@@ -219,7 +219,10 @@ func numericBytesIntKey(b []byte) (int64, int) {
 	if n, ok := parseInt64(b); ok {
 		return n, keyInt
 	}
-	// normString's fallback: ParseFloat on the trimmed text, then normFloat.
+	// normString's fallback: SQL number syntax, ParseFloat, then normFloat.
+	if !sqlNumeric(string(b)) {
+		return 0, keyOther // a non-numeric "s:" key
+	}
 	f, err := strconv.ParseFloat(string(b), 64)
 	if err != nil || math.IsInf(f, 0) || math.IsNaN(f) {
 		return 0, keyOther // a non-numeric "s:" key
@@ -423,6 +426,9 @@ func normFloat(f float64) string {
 
 func normString(s string) string {
 	t := strings.TrimSpace(s)
+	if !sqlNumeric(t) {
+		return "s:" + s
+	}
 	if i, err := strconv.ParseInt(t, 10, 64); err == nil {
 		return "n:" + strconv.FormatInt(i, 10)
 	}
@@ -430,6 +436,46 @@ func normString(s string) string {
 		return normFloat(f)
 	}
 	return "s:" + s
+}
+
+// sqlNumeric reports whether t is a number in SQL literal syntax: optional
+// sign, digits with an optional fraction, and an optional exponent. Go-only
+// forms such as "1_000", "0x1Ap0", "Inf" or "NaN" stay text.
+func sqlNumeric(t string) bool {
+	i, n := 0, len(t)
+	if i < n && (t[i] == '+' || t[i] == '-') {
+		i++
+	}
+	digits := 0
+	for i < n && t[i] >= '0' && t[i] <= '9' {
+		i++
+		digits++
+	}
+	if i < n && t[i] == '.' {
+		i++
+		for i < n && t[i] >= '0' && t[i] <= '9' {
+			i++
+			digits++
+		}
+	}
+	if digits == 0 {
+		return false
+	}
+	if i < n && (t[i] == 'e' || t[i] == 'E') {
+		i++
+		if i < n && (t[i] == '+' || t[i] == '-') {
+			i++
+		}
+		exp := 0
+		for i < n && t[i] >= '0' && t[i] <= '9' {
+			i++
+			exp++
+		}
+		if exp == 0 {
+			return false
+		}
+	}
+	return i == n
 }
 
 func toInt64(v any) (int64, bool) {

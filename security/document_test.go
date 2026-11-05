@@ -16,6 +16,9 @@ func TestAnalyzeDocument(t *testing.T) {
 		{`{"mapReduce": "u", "map": "function(){}", "reduce": "function(){}"}`, true},
 		{`{"find": "users", "filter": {"note": "$where is just text"}}`, false},
 		{`{"find": `, true},
+		{`{"find": "u", "filter": {"$expr": {"$function": {"body": "f"}}, "$expr": {"$eq": [1, 1]}}}`, true},
+		{`{"find": "u", "filter": {"a": [1, {"b": "$where"}], "c": {"$where": "x"}}}`, true},
+		{`{"find": "u", "filter": {"a": [{"x": 1}, {"y": "$function"}]}}`, false},
 	}
 	for _, c := range cases {
 		if got := e.AnalyzeDocument(c.doc).Block; got != c.block {

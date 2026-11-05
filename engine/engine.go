@@ -117,7 +117,7 @@ func (e *Engine) Query(ctx context.Context, query string, args ...any) (internal
 	if parser.DialectSensitive(query) && parser.Normalize(query, parser.Postgres) != parser.Normalize(query, parser.MySQL) {
 		// Backslashes in literals, double quotes and '#' mean different things
 		// to PostgreSQL and MySQL, so a federated query must avoid them.
-		return nil, tr, errors.New("engine: federated queries must not use backslashes in literals, double quotes or '#', whose meaning differs between dialects")
+		return nil, tr, errors.New("engine: federated queries must not use text that PostgreSQL and MySQL read differently (backslashes in literals, double quotes, '#', '||', '--' without a space, nested comments)")
 	}
 	// Scans go through each handle, so its middleware sees them.
 	conns := make(map[string]internal.Connection, len(e.Sources))

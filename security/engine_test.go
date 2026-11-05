@@ -288,3 +288,27 @@ func TestPrepareAndOutfile(t *testing.T) {
 		}
 	}
 }
+
+// PostgreSQL gives '/', '^' and '||' other meanings than MySQL, so constant
+// expressions using them must not be decided with MySQL semantics.
+func TestPostgresOperatorSemantics(t *testing.T) {
+	e := NewSecurityEngine()
+	for _, q := range []string{
+		"SELECT id FROM accounts WHERE id = 7 OR 3/2=1",
+		"SELECT id FROM accounts WHERE id = 7 OR 2^3=8",
+		"SELECT id FROM accounts WHERE id = 7 OR 'a'||'1'='a1'",
+		"SELECT id FROM accounts WHERE id = 7 OR 7%3=1",
+	} {
+		if d := e.AnalyzeFor(q, parser.Postgres); !d.Block {
+			t.Errorf("%s: not blocked under PostgreSQL rules", q)
+		}
+	}
+	for _, q := range []string{
+		"SELECT id FROM accounts WHERE price / qty > 2 OR id = $1",
+		"SELECT first || ' ' || last FROM accounts WHERE id = $1",
+	} {
+		if d := e.AnalyzeFor(q, parser.Postgres); d.Block {
+			t.Errorf("%s: blocked: %s", q, d.Reason)
+		}
+	}
+}

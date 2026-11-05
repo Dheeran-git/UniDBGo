@@ -49,3 +49,18 @@ func TestFederatedSetOperationRejected(t *testing.T) {
 		}
 	}
 }
+
+func TestFederatedClausesRejected(t *testing.T) {
+	for _, q := range []string{
+		"SELECT DISTINCT u.name FROM postgres.users u JOIN mysql.orders o ON u.id = o.user_id",
+		"SELECT u.name FROM postgres.users u JOIN mysql.orders o ON u.id = o.user_id FOR UPDATE",
+	} {
+		ast, err := parser.Parse(q)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := GeneratePlan(ast); err == nil {
+			t.Errorf("%s: want an explicit error", q)
+		}
+	}
+}

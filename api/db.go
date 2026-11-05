@@ -103,7 +103,12 @@ type TxOptions = internal.TxOptions
 // BeginTx starts a database transaction; opts may be nil. Statements issued
 // on the returned transaction pass through the middleware chain.
 func (db *DB) BeginTx(ctx context.Context, opts *TxOptions) (internal.Tx, error) {
-	tx, err := db.conn.BeginTx(ctx, opts)
+	tx, err := bounded(ctx, func() (internal.Tx, error) { return db.conn.BeginTx(ctx, opts) },
+		func(tx internal.Tx) {
+			if tx != nil {
+				tx.Rollback()
+			}
+		})
 	if err != nil {
 		return nil, err
 	}
@@ -129,12 +134,22 @@ type chainedTx struct {
 	db *DB
 }
 
+// Statements in a transaction are bounded by their context like DB.Query and
+// DB.Exec. Commit and Rollback take no context and are not bounded.
 func (t *chainedTx) Query(ctx context.Context, query string, args ...any) (internal.Result, error) {
-	return t.db.chain(t.tx.Query)(t.db.withDriver(ctx), query, args...)
+	h := t.db.chain(t.tx.Query)
+	return bounded(ctx, func() (internal.Result, error) { return h(t.db.withDriver(ctx), query, args...) },
+		func(r internal.Result) {
+			if r != nil {
+				r.Close()
+			}
+		})
 }
 
 func (t *chainedTx) Exec(ctx context.Context, query string, args ...any) (internal.ExecResult, error) {
-	return execThrough(t.db.chain, t.tx.Exec, t.db.withDriver(ctx), query, args...)
+	return bounded(ctx, func() (internal.ExecResult, error) {
+		return execThrough(t.db.chain, t.tx.Exec, t.db.withDriver(ctx), query, args...)
+	}, func(internal.ExecResult) {})
 }
 
 func (t *chainedTx) Commit() error   { return t.tx.Commit() }

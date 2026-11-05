@@ -38,6 +38,10 @@ func planFederatedQuery(ast *parser.QueryAST, meta QueryMetadata) (*ExecutionPla
 	if sel.GroupBy != nil || sel.Having != nil || sel.OrderBy != nil || sel.Limit != nil {
 		return nil, fmt.Errorf("%w: GROUP BY, HAVING, ORDER BY and LIMIT are not federated yet", ErrUnsupportedFederation)
 	}
+	if sel.Distinct || sel.Lock != sqlparser.NoLock || sel.SQLCalcFoundRows || sel.With != nil || sel.Into != nil || len(sel.Windows) > 0 {
+		// Executing the join without these would silently change the result.
+		return nil, fmt.Errorf("%w: DISTINCT, locking clauses, WITH, INTO and window definitions are not federated yet", ErrUnsupportedFederation)
+	}
 
 	left, lerr := scanSource(join.LeftExpr, ast.RawQuery)
 	right, rerr := scanSource(join.RightExpr, ast.RawQuery)
