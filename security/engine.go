@@ -27,6 +27,7 @@ const (
 	CatCommentTruncation Category = "comment-truncation" // V4
 	CatTimingFunction    Category = "dangerous-function" // V5
 	CatInference         Category = "inference"          // V5
+	CatErrorEcho         Category = "error-echo"         // V5
 	CatSystemCatalog     Category = "system-catalog"
 	CatUnparseable       Category = "unparseable"
 	CatAnomaly           Category = "anomaly"
@@ -118,6 +119,26 @@ var dangerousFunctions = map[string]bool{
 	"lo_import": true, "lo_export": true, "dblink": true, "dblink_exec": true,
 	"receive_message": true, // dbms_pipe.receive_message
 }
+
+// errorEchoFunctions are functions whose error messages echo (a prefix of)
+// their argument back to the client, so an attacker can exfiltrate data by
+// forcing a deliberately malformed argument built from the value they want to
+// read (V5, error-based side channels). They are matched by their dedicated
+// AST node types rather than by name; this comment is the documented set:
+//
+//	EXTRACTVALUE(frag, xpath)        -- "XPATH syntax error: '<data>'"
+//	UPDATEXML(target, xpath, new)    -- "XPATH syntax error: '<data>'"
+//	GTID_SUBSET(set, n) / GTID_SUBTRACT(set, set)
+//	                                 -- "Malformed GTID set specification '<data>'"
+//	ST_LATFROMGEOHASH / ST_LONGFROMGEOHASH / ST_POINTFROMGEOHASH(hash[, srid])
+//	                                 -- the geohash argument is echoed on error
+//	JSON_KEYS(doc[, path])           -- "Invalid JSON text ... '<data>'"
+//
+// These are the error-based vectors sqlmap uses against MySQL. A call is
+// rejected only when one of its arguments (at any depth) carries an
+// exfiltration source: a sub-query, a system-information function, or an @@
+// system variable. Passing columns or literals (the legitimate use) is
+// allowed. See isErrorEcho and exfilSource.
 
 // systemInfoFunctions disclose server metadata. Compared against constants
 // they are the hallmark of inference (blind) attacks, which test their value
@@ -265,6 +286,12 @@ func (e *SecurityEngine) inspect(stmt sqlparser.Statement) Decision {
 			if n.Type == sqlparser.GetLock {
 				return false, errStop{block(CatTimingFunction, "Dangerous function call: get_lock()")}
 			}
+		case *sqlparser.ExtractValueExpr, *sqlparser.UpdateXMLExpr, *sqlparser.GTIDFuncExpr,
+			*sqlparser.GeomFromGeoHashExpr, *sqlparser.JSONKeysExpr:
+			if src := exfilSource(n); src != "" {
+				return false, errStop{block(CatErrorEcho,
+					"Error-based side channel: %s receives %s", errorEchoName(n), src)}
+			}
 		case *sqlparser.Union:
 			for _, branch := range unionBranches(n) {
 				if d := e.checkUnionBranch(branch, topUnion && n == stmt); d.Block {
@@ -330,6 +357,17 @@ func (e *SecurityEngine) inferenceProbe(cmp sqlparser.Expr) Decision {
 					probe = "a sub-query over " + t.Name.String()
 				}
 			}
+			// A scalar sub-query that *selects* server metadata is itself an
+			// inference primitive, e.g. (SELECT version())::int = 1 (the
+			// PostgreSQL postfix cast is dropped during normalization, leaving
+			// the bare comparison). Only the projection is inspected: metadata
+			// used to *filter* a sub-query (WHERE created_by = CURRENT_USER())
+			// is legitimate.
+			if probe == "" {
+				if meta := selectsMetadata(n.Select); meta != "" {
+					probe = "a sub-query selecting " + meta
+				}
+			}
 			return false, nil // its own columns are not outer columns
 		}
 		return true, nil
@@ -338,6 +376,97 @@ func (e *SecurityEngine) inferenceProbe(cmp sqlparser.Expr) Decision {
 		return block(CatInference, "Inference probe: predicate tests %s against constants", probe)
 	}
 	return Decision{}
+}
+
+// errorEchoName gives a readable name for an error-echoing function node, for
+// use in a block reason.
+func errorEchoName(node sqlparser.SQLNode) string {
+	switch n := node.(type) {
+	case *sqlparser.ExtractValueExpr:
+		return "extractvalue()"
+	case *sqlparser.UpdateXMLExpr:
+		return "updatexml()"
+	case *sqlparser.GTIDFuncExpr:
+		if n.Type == sqlparser.GTIDSubtractType {
+			return "gtid_subtract()"
+		}
+		return "gtid_subset()"
+	case *sqlparser.GeomFromGeoHashExpr:
+		switch n.GeomType {
+		case sqlparser.LongitudeFromHash:
+			return "st_longfromgeohash()"
+		case sqlparser.PointFromHash:
+			return "st_pointfromgeohash()"
+		default:
+			return "st_latfromgeohash()"
+		}
+	case *sqlparser.JSONKeysExpr:
+		return "json_keys()"
+	}
+	return "an error-echoing function"
+}
+
+// exfilSource reports the first exfiltration source found anywhere among the
+// arguments of node (a sub-query, a system-information function, or an @@
+// system variable), or "" if the arguments carry only columns, literals and
+// ordinary expressions. node is an error-echoing function node, and its
+// children are exactly its arguments.
+func exfilSource(node sqlparser.SQLNode) string {
+	var found string
+	_ = sqlparser.Walk(func(inner sqlparser.SQLNode) (bool, error) {
+		if inner == node {
+			return true, nil // descend into the arguments, but do not match the node itself
+		}
+		switch x := inner.(type) {
+		case *sqlparser.Subquery:
+			found = "a sub-query"
+			return false, errStop{}
+		case *sqlparser.FuncExpr:
+			if systemInfoFunctions[x.Name.Lowered()] {
+				found = x.Name.Lowered() + "()"
+				return false, errStop{}
+			}
+		case *sqlparser.Variable:
+			found = "@@" + x.Name.String()
+			return false, errStop{}
+		}
+		return true, nil
+	}, node)
+	return found
+}
+
+// selectsMetadata reports the first server-metadata source (a
+// systemInfoFunction or @@ variable) that appears in the projection list of
+// sel or any of its UNION branches, or "" if none. Only the selected
+// expressions are inspected, not FROM/WHERE/GROUP BY, so metadata used to
+// filter a sub-query is not treated as exfiltration.
+func selectsMetadata(sel sqlparser.TableStatement) string {
+	for _, branch := range unionBranches(sel) {
+		for _, se := range branch.SelectExprs.Exprs {
+			ae, ok := se.(*sqlparser.AliasedExpr)
+			if !ok {
+				continue
+			}
+			var meta string
+			_ = sqlparser.Walk(func(node sqlparser.SQLNode) (bool, error) {
+				switch x := node.(type) {
+				case *sqlparser.FuncExpr:
+					if systemInfoFunctions[x.Name.Lowered()] {
+						meta = x.Name.Lowered() + "()"
+						return false, errStop{}
+					}
+				case *sqlparser.Variable:
+					meta = "@@" + x.Name.String()
+					return false, errStop{}
+				}
+				return true, nil
+			}, ae.Expr)
+			if meta != "" {
+				return meta
+			}
+		}
+	}
+	return ""
 }
 
 // checkUnionBranch blocks UNION branches that read restricted tables or

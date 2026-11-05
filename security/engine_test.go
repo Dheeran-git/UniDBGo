@@ -120,3 +120,94 @@ func TestDecisionCacheRespectsDialectAndReset(t *testing.T) {
 		t.Fatal("configuration change not applied after ResetCache")
 	}
 }
+
+// TestErrorEchoSideChannel covers V5 error-based exfiltration: a function whose
+// error message echoes its argument (EXTRACTVALUE, UPDATEXML, GTID_SUBSET /
+// GTID_SUBTRACT, ST_*FromGeoHash, JSON_KEYS) is rejected when any argument, at
+// any depth, carries a sub-query, a system-information function, or an @@
+// system variable, while columns and literals are allowed. The restricted set
+// includes api_keys so a sub-query over it is also a restricted-table read.
+func TestErrorEchoSideChannel(t *testing.T) {
+	e := &SecurityEngine{RestrictedTables: []string{"users", "api_keys"}}
+	const base = "SELECT id, name FROM accounts WHERE name = 'alice'"
+	cases := []struct {
+		query string
+		block bool
+		cat   Category
+	}{
+		// Confirmed sqlmap error-based attacks (full statements, MySQL dialect).
+		{base + " AND EXTRACTVALUE(1,CONCAT(0x7e,(SELECT secret FROM api_keys LIMIT 1)))", true, CatErrorEcho},
+		{base + " AND GTID_SUBSET(CONCAT(0x71,(SELECT DATABASE()),0x71),1)", true, CatErrorEcho},
+		{base + " AND UPDATEXML(1,CONCAT(0x7e,(SELECT secret FROM api_keys LIMIT 1)),1)", true, CatErrorEcho},
+		{base + " AND UPDATEXML(1,CONCAT(0x7e,@@version),1)", true, CatErrorEcho},
+		{base + " AND GTID_SUBTRACT(CONCAT(0x71,(SELECT version()),0x71),0x71)", true, CatErrorEcho},
+		{base + " AND ST_LatFromGeoHash((SELECT secret FROM api_keys LIMIT 1))", true, CatErrorEcho},
+		{base + " AND ST_LongFromGeoHash(version())", true, CatErrorEcho},
+		{base + " AND ST_PointFromGeoHash(@@hostname,0)", true, CatErrorEcho},
+		{base + " AND JSON_KEYS((SELECT secret FROM api_keys LIMIT 1))", true, CatErrorEcho},
+		// Direct metadata argument, no nesting.
+		{base + " AND EXTRACTVALUE(1,database())", true, CatErrorEcho},
+		// Benign look-alikes: columns and literals only -> allowed.
+		{"SELECT EXTRACTVALUE(doc, '/a/b') FROM docs WHERE id = 1", false, CatNone},
+		{"SELECT UPDATEXML(doc, '/a', '<a>x</a>') FROM docs WHERE id = 1", false, CatNone},
+		{"SELECT id FROM points WHERE id = 1 AND ST_LatFromGeoHash(geohash) > 0", false, CatNone},
+		{"SELECT JSON_KEYS(payload, '$.a') FROM events WHERE id = 1", false, CatNone},
+		{"SELECT GTID_SUBSET(src_gtid, dst_gtid) FROM replicas WHERE id = 1", false, CatNone},
+	}
+	for _, c := range cases {
+		d := e.Analyze(c.query)
+		if d.Block != c.block || (c.block && d.Category != c.cat) {
+			t.Errorf("%q: got block=%v cat=%q (%s), want block=%v cat=%q",
+				c.query, d.Block, d.Category, d.Reason, c.block, c.cat)
+		}
+	}
+}
+
+// TestConstantConjunctAllowed documents (and asserts) current behaviour: a
+// constant conjunct such as "id = 1 AND 4991=4991" is allowed by design. It is
+// the idiom query builders emit (e.g. "WHERE 1=1 AND ..."), and the tautology
+// invariant V1 only rejects an always-true *disjunct* (an OR branch), not a
+// conjunct. This test guards against a future over-broad tautology rule.
+func TestConstantConjunctAllowed(t *testing.T) {
+	e := &SecurityEngine{}
+	for _, q := range []string{
+		"SELECT id FROM accounts WHERE id = 1 AND 4991=4991",
+		"SELECT * FROM orders WHERE 1=1 AND status = 'paid'",
+	} {
+		if d := e.Analyze(q); d.Block {
+			t.Errorf("constant conjunct should be allowed: %q blocked as %s (%s)", q, d.Category, d.Reason)
+		}
+	}
+}
+
+// TestPostgresCastExtraction verifies PostgreSQL CAST-based extraction stays
+// blocked (V3/V5). CAST((SELECT ...) AS int) is rejected fail-closed because
+// the MySQL grammar does not accept the PostgreSQL cast target; the postfix
+// (SELECT ...)::int form has its cast stripped during normalization, and the
+// residual comparison is caught when the sub-query reads a restricted table or
+// selects server metadata.
+func TestPostgresCastExtraction(t *testing.T) {
+	e := &SecurityEngine{RestrictedTables: []string{"users", "api_keys"}, Dialect: parser.Postgres}
+	const base = "SELECT id, name FROM accounts WHERE name = 'alice'"
+	cases := []struct {
+		query string
+		block bool
+		cat   Category
+	}{
+		{base + " AND 1 = CAST((SELECT secret FROM api_keys LIMIT 1) AS int)", true, CatUnparseable},
+		{base + " AND 1 = CAST((SELECT version()) AS int)", true, CatUnparseable},
+		{base + " AND 7 = CAST((CHR(113)||(SELECT secret FROM api_keys LIMIT 1)) AS NUMERIC)", true, CatUnparseable},
+		{base + " AND (SELECT secret FROM api_keys LIMIT 1)::int = 1", true, CatInference},
+		{base + " AND (SELECT version())::int = 1", true, CatInference},
+		{base + " AND 1 = ((SELECT version()))::int", true, CatInference},
+		// Metadata used only to filter a sub-query is legitimate.
+		{"SELECT * FROM docs WHERE id IN (SELECT doc_id FROM acl WHERE grantee = CURRENT_USER())", false, CatNone},
+	}
+	for _, c := range cases {
+		d := e.Analyze(c.query)
+		if d.Block != c.block || d.Category != c.cat {
+			t.Errorf("%q: got block=%v cat=%q (%s), want block=%v cat=%q",
+				c.query, d.Block, d.Category, d.Reason, c.block, c.cat)
+		}
+	}
+}
